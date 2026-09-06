@@ -16,7 +16,6 @@ def sync_to_github():
             subprocess.run(["git", "config", "--global", "user.name", "Streamlit Bot"], check=True)
             subprocess.run(["git", "add", "traffic_cams.db"], check=True)
             
-            # Commit only if there are changes
             commit_res = subprocess.run(["git", "commit", "-m", "Auto-update database [skip ci]"], capture_output=True)
             if commit_res.returncode == 0:
                 remote_url = f"https://{token}@github.com/{repo}.git"
@@ -79,6 +78,7 @@ with col_logout:
 
 st.divider()
 
+# Safe Database Connection and Initialization
 conn = sqlite3.connect('traffic_cams.db', check_same_thread=False)
 c = conn.cursor()
 
@@ -86,15 +86,15 @@ c.execute('''CREATE TABLE IF NOT EXISTS cameras
              (id INTEGER PRIMARY KEY, name TEXT, location TEXT, coordinates TEXT, url TEXT, traffic_vision_link TEXT, rating TEXT, submitted_by TEXT)''')
 conn.commit()
 
-try:
-    c.execute("SELECT traffic_vision_link FROM cameras LIMIT 1")
-except sqlite3.OperationalError:
+# Robust column verification using PRAGMA instead of error-prone try/except
+c.execute("PRAGMA table_info(cameras)")
+existing_columns = [col[1] for col in c.fetchall()]
+
+if "traffic_vision_link" not in existing_columns:
     c.execute("ALTER TABLE cameras ADD COLUMN traffic_vision_link TEXT")
     conn.commit()
 
-try:
-    c.execute("SELECT submitted_by FROM cameras LIMIT 1")
-except sqlite3.OperationalError:
+if "submitted_by" not in existing_columns:
     c.execute("ALTER TABLE cameras ADD COLUMN submitted_by TEXT")
     conn.commit()
 
@@ -118,7 +118,7 @@ with st.sidebar:
                 c.execute("INSERT INTO cameras (name, location, coordinates, url, traffic_vision_link, rating, submitted_by) VALUES (?, ?, ?, ?, ?, ?, ?)", 
                           (name, loc, coords, url, vision_link, rating, st.session_state["username"]))
                 conn.commit()
-                sync_to_github() # Automatically back up to GitHub!
+                sync_to_github() 
                 st.success("Camera saved and synced!")
                 st.rerun()
                 
@@ -156,13 +156,13 @@ with st.sidebar:
                     c.execute("UPDATE cameras SET name=?, location=?, coordinates=?, url=?, traffic_vision_link=?, rating=? WHERE id=?", 
                               (e_name, e_loc, e_coords, e_url, e_vision_link, e_rating, selected_id))
                     conn.commit()
-                    sync_to_github() # Back up changes!
+                    sync_to_github() 
                     st.success("Updated and synced successfully!")
                     st.rerun()
                 elif delete_btn:
                     c.execute("DELETE FROM cameras WHERE id=?", (selected_id,))
                     conn.commit()
-                    sync_to_github() # Back up changes!
+                    sync_to_github() 
                     st.warning("Camera deleted and synced!")
                     st.rerun()
         else:
