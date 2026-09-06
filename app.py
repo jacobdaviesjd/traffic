@@ -131,14 +131,25 @@ with st.sidebar:
                 st.rerun()
                 
     elif action == "Edit Existing Camera":
-        c.execute("SELECT id, name FROM cameras")
-        cams = c.fetchall()
-        if cams:
-            cam_dict = {name: cid for cid, name in cams}
-            selected_name = st.selectbox("Select Camera to Edit", list(cam_dict.keys()))
-            selected_id = cam_dict[selected_name]
+        c.execute("SELECT id, name, position, link_to_id FROM cameras")
+        all_cams = c.fetchall()
+        
+        if all_cams:
+            # Build helper dictionary for display name mapping
+            id_to_name = {row[0]: row[1] for row in all_cams}
             
-            c.execute("SELECT name, location, coordinates, url, traffic_vision_link, rating FROM cameras WHERE id = ?", (selected_id,))
+            cam_options = {}
+            for cid, cname, cpos, cparent in all_cams:
+                if cpos and cparent in id_to_name:
+                    display_label = f"{cname} [Tree: {cpos} of {id_to_name[cparent]}]"
+                else:
+                    display_label = f"{cname} [Main Camera]"
+                cam_options[display_label] = cid
+                
+            selected_label = st.selectbox("Select Camera to Edit / Delete", list(cam_options.keys()))
+            selected_id = cam_options[selected_label]
+            
+            c.execute("SELECT name, location, coordinates, url, traffic_vision_link, rating, link_to_id, position FROM cameras WHERE id = ?", (selected_id,))
             curr = c.fetchone()
             
             with st.form("edit_form"):
@@ -154,6 +165,15 @@ with st.sidebar:
                     r_index = 0
                 e_rating = st.selectbox("Rating", ratings_list, index=r_index)
                 
+                # If it's a tree node, allow changing its relation/position
+                is_tree_node = curr[6] is not None
+                e_position = curr[7]
+                if is_tree_node:
+                    pos_options = ["Before (Upstream)", "After (Downstream)"]
+                    current_pos_idx = 0 if e_position == "Before" else 1
+                    chosen_pos = st.selectbox("Tree Position", pos_options, index=current_pos_idx)
+                    e_position = "Before" if "Before" in chosen_pos else "After"
+                
                 col1, col2 = st.columns(2)
                 with col1:
                     update_btn = st.form_submit_button("Update")
@@ -161,27 +181,32 @@ with st.sidebar:
                     delete_btn = st.form_submit_button("Delete")
                     
                 if update_btn and e_name and e_url:
-                    c.execute("UPDATE cameras SET name=?, location=?, coordinates=?, url=?, traffic_vision_link=?, rating=? WHERE id=?", 
-                              (e_name, e_loc, e_coords, e_url, e_vision_link, e_rating, selected_id))
+                    if is_tree_node:
+                        c.execute("UPDATE cameras SET name=?, location=?, coordinates=?, url=?, traffic_vision_link=?, rating=?, position=? WHERE id=?", 
+                                  (e_name, e_loc, e_coords, e_url, e_vision_link, e_rating, e_position, selected_id))
+                    else:
+                        c.execute("UPDATE cameras SET name=?, location=?, coordinates=?, url=?, traffic_vision_link=?, rating=? WHERE id=?", 
+                                  (e_name, e_loc, e_coords, e_url, e_vision_link, e_rating, selected_id))
                     conn.commit()
                     sync_to_github() 
                     st.success("Updated and synced successfully!")
                     st.rerun()
                 elif delete_btn:
-                    c.execute("DELETE FROM cameras WHERE id=?", (selected_id,))
+                    # Delete the camera and any child nodes linked to it if it's a main camera
+                    c.execute("DELETE FROM cameras WHERE id = ? OR link_to_id = ?", (selected_id, selected_id))
                     conn.commit()
                     sync_to_github() 
-                    st.warning("Camera deleted and synced!")
+                    st.warning("Camera (and its linked tree nodes) deleted and synced!")
                     st.rerun()
         else:
             st.info("No cameras available to edit.")
 
     else: # Link Nearby Cam (Tree)
-        c.execute("SELECT id, name FROM cameras")
+        c.execute("SELECT id, name FROM cameras WHERE link_to_id IS NULL OR link_to_id = 0")
         cams = c.fetchall()
         if cams:
             cam_dict = {name: cid for cid, name in cams}
-            target_name = st.selectbox("Select Target Camera", list(cam_dict.keys()))
+            target_name = st.selectbox("Select Main Target Camera", list(cam_dict.keys()))
             target_id = cam_dict[target_name]
             
             relation = st.selectbox("Relationship", ["Before (Upstream)", "After (Downstream)"])
@@ -203,7 +228,7 @@ with st.sidebar:
                     st.success("Nearby tree camera added and synced!")
                     st.rerun()
         else:
-            st.info("Add a primary camera first before creating a tree.")
+            st.info("Add a main camera first before creating a tree.")
 
 # Main Interface: Search and Sorting controls
 st.subheader("Database List")
@@ -245,7 +270,6 @@ if not df.empty:
     st.divider()
     st.subheader("Live Feeds & Tree Views")
     
-    # Filter for root/main cameras (those not linked as sub-nodes, or display main ones first)
     main_cams = df[df['link_to_id'].isna() | (df['link_to_id'] == 0)]
     
     for _, row in main_cams.iterrows():
@@ -255,7 +279,6 @@ if not df.empty:
         
         st.markdown(f"### 📍 {row['Name']} — *{row['Location']}*{coords_display}{vision_display}{submitter_display} — Status: **{row['Rating']}**")
         
-        # Main Camera Stream Player
         video_url = row["URL"]
         main_id = row['id']
         hls_player_html = f"""
@@ -277,7 +300,6 @@ if not df.empty:
         """
         components.html(hls_player_html, height=320)
         
-        # Tree expansion for nearby cams connected to this main camera
         c.execute("SELECT id, name, location, coordinates, url, traffic_vision_link, rating, submitted_by, position FROM cameras WHERE link_to_id = ?", (int(main_id),))
         linked_cams = c.fetchall()
         
