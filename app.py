@@ -2,6 +2,27 @@ import streamlit as st
 import streamlit.components.v1 as components
 import sqlite3
 import pandas as pd
+import subprocess
+import os
+
+# Helper function to auto-sync SQLite database back to GitHub
+def sync_to_github():
+    try:
+        if "github_token" in st.secrets and "github_repo" in st.secrets:
+            token = st.secrets["github_token"]
+            repo = st.secrets["github_repo"]
+            
+            subprocess.run(["git", "config", "--global", "user.email", "streamlit-bot@app.com"], check=True)
+            subprocess.run(["git", "config", "--global", "user.name", "Streamlit Bot"], check=True)
+            subprocess.run(["git", "add", "traffic_cams.db"], check=True)
+            
+            # Commit only if there are changes
+            commit_res = subprocess.run(["git", "commit", "-m", "Auto-update database [skip ci]"], capture_output=True)
+            if commit_res.returncode == 0:
+                remote_url = f"https://{token}@github.com/{repo}.git"
+                subprocess.run(["git", "push", remote_url, "HEAD:main"], check=True)
+    except Exception as e:
+        print("Git sync skipped or failed:", e)
 
 # Initialize session state for login
 if "logged_in" not in st.session_state:
@@ -24,7 +45,6 @@ if not st.session_state["logged_in"]:
     pwd = st.text_input("Shared Password", type="password")
     remember_me = st.checkbox("Remember me on this device")
     
-    # Safely look for cloud secret, fall back for local testing
     try:
         correct_password = st.secrets["app_password"]
     except Exception:
@@ -34,12 +54,9 @@ if not st.session_state["logged_in"]:
         if pwd == correct_password and username_input:
             st.session_state["logged_in"] = True
             st.session_state["username"] = username_input
-            
-            # Save to query params if remember me is checked
             if remember_me:
                 st.query_params["logged_in"] = "true"
                 st.query_params["username"] = username_input
-                
             st.rerun()
         elif not username_input:
             st.error("Please enter your name.")
@@ -53,7 +70,7 @@ with col_title:
     st.title("Traffic Camera Monitor")
     st.write(f"Logged in as: **{st.session_state['username']}**")
 with col_logout:
-    st.write("") # spacing
+    st.write("") 
     if st.button("Logout"):
         st.session_state["logged_in"] = False
         st.session_state["username"] = ""
@@ -65,12 +82,10 @@ st.divider()
 conn = sqlite3.connect('traffic_cams.db', check_same_thread=False)
 c = conn.cursor()
 
-# Create table with submitted_by column
 c.execute('''CREATE TABLE IF NOT EXISTS cameras 
              (id INTEGER PRIMARY KEY, name TEXT, location TEXT, coordinates TEXT, url TEXT, traffic_vision_link TEXT, rating TEXT, submitted_by TEXT)''')
 conn.commit()
 
-# Handle automatic migration if old database didn't have the new columns
 try:
     c.execute("SELECT traffic_vision_link FROM cameras LIMIT 1")
 except sqlite3.OperationalError:
@@ -103,7 +118,8 @@ with st.sidebar:
                 c.execute("INSERT INTO cameras (name, location, coordinates, url, traffic_vision_link, rating, submitted_by) VALUES (?, ?, ?, ?, ?, ?, ?)", 
                           (name, loc, coords, url, vision_link, rating, st.session_state["username"]))
                 conn.commit()
-                st.success("Camera saved!")
+                sync_to_github() # Automatically back up to GitHub!
+                st.success("Camera saved and synced!")
                 st.rerun()
                 
     else: # Edit Existing Camera
@@ -140,12 +156,14 @@ with st.sidebar:
                     c.execute("UPDATE cameras SET name=?, location=?, coordinates=?, url=?, traffic_vision_link=?, rating=? WHERE id=?", 
                               (e_name, e_loc, e_coords, e_url, e_vision_link, e_rating, selected_id))
                     conn.commit()
-                    st.success("Updated successfully!")
+                    sync_to_github() # Back up changes!
+                    st.success("Updated and synced successfully!")
                     st.rerun()
                 elif delete_btn:
                     c.execute("DELETE FROM cameras WHERE id=?", (selected_id,))
                     conn.commit()
-                    st.warning("Camera deleted!")
+                    sync_to_github() # Back up changes!
+                    st.warning("Camera deleted and synced!")
                     st.rerun()
         else:
             st.info("No cameras available to edit.")
@@ -175,7 +193,6 @@ if not df.empty:
 
     display_df = df.drop(columns=['id', 'URL'])
 
-    # Style the Rating column to stand out with distinct background colors
     def color_rating(val):
         if "Green" in str(val):
             return 'background-color: #d4edda; color: #155724; font-weight: bold;'
@@ -198,7 +215,6 @@ if not df.empty:
         
         st.markdown(f"**{row['Name']}** — *{row['Location']}*{coords_display}{vision_display}{submitter_display} — Status: **{row['Rating']}**")
         
-        # Cross-browser HLS Video Player (Works on Firefox and Chrome)
         video_url = row["URL"]
         hls_player_html = f"""
         <div>
