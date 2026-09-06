@@ -83,10 +83,10 @@ conn = sqlite3.connect('traffic_cams.db', check_same_thread=False)
 c = conn.cursor()
 
 c.execute('''CREATE TABLE IF NOT EXISTS cameras 
-             (id INTEGER PRIMARY KEY, name TEXT, location TEXT, coordinates TEXT, url TEXT, traffic_vision_link TEXT, rating TEXT, submitted_by TEXT)''')
+             (id INTEGER PRIMARY KEY, name TEXT, location TEXT, coordinates TEXT, url TEXT, traffic_vision_link TEXT, rating TEXT, submitted_by TEXT, link_to_id INTEGER, position TEXT)''')
 conn.commit()
 
-# Robust column verification using PRAGMA instead of error-prone try/except
+# Robust column verification using PRAGMA
 c.execute("PRAGMA table_info(cameras)")
 existing_columns = [col[1] for col in c.fetchall()]
 
@@ -98,10 +98,18 @@ if "submitted_by" not in existing_columns:
     c.execute("ALTER TABLE cameras ADD COLUMN submitted_by TEXT")
     conn.commit()
 
-# Sidebar Manager (Add or Edit)
+if "link_to_id" not in existing_columns:
+    c.execute("ALTER TABLE cameras ADD COLUMN link_to_id INTEGER")
+    conn.commit()
+
+if "position" not in existing_columns:
+    c.execute("ALTER TABLE cameras ADD COLUMN position TEXT")
+    conn.commit()
+
+# Sidebar Manager (Add, Edit, or Link Tree)
 with st.sidebar:
     st.header("Camera Manager")
-    action = st.radio("Choose Action", ["Add New Camera", "Edit Existing Camera"])
+    action = st.radio("Choose Action", ["Add New Camera", "Edit Existing Camera", "Link Nearby Cam (Tree)"])
     
     ratings_list = ["Green 🟢", "Orange 🟠", "Red 🔴"]
 
@@ -115,14 +123,14 @@ with st.sidebar:
             rating = st.selectbox("Rating", ratings_list)
             
             if st.form_submit_button("Save Camera") and name and url:
-                c.execute("INSERT INTO cameras (name, location, coordinates, url, traffic_vision_link, rating, submitted_by) VALUES (?, ?, ?, ?, ?, ?, ?)", 
+                c.execute("INSERT INTO cameras (name, location, coordinates, url, traffic_vision_link, rating, submitted_by, link_to_id, position) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL)", 
                           (name, loc, coords, url, vision_link, rating, st.session_state["username"]))
                 conn.commit()
                 sync_to_github() 
                 st.success("Camera saved and synced!")
                 st.rerun()
                 
-    else: # Edit Existing Camera
+    elif action == "Edit Existing Camera":
         c.execute("SELECT id, name FROM cameras")
         cams = c.fetchall()
         if cams:
@@ -168,10 +176,39 @@ with st.sidebar:
         else:
             st.info("No cameras available to edit.")
 
+    else: # Link Nearby Cam (Tree)
+        c.execute("SELECT id, name FROM cameras")
+        cams = c.fetchall()
+        if cams:
+            cam_dict = {name: cid for cid, name in cams}
+            target_name = st.selectbox("Select Target Camera", list(cam_dict.keys()))
+            target_id = cam_dict[target_name]
+            
+            relation = st.selectbox("Relationship", ["Before (Upstream)", "After (Downstream)"])
+            
+            with st.form("tree_form"):
+                t_name = st.text_input("Nearby Camera Name")
+                t_loc = st.text_input("Location")
+                t_coords = st.text_input("Coordinates")
+                t_url = st.text_input("Stream URL")
+                t_vision = st.text_input("Traffic Vision Link")
+                t_rating = st.selectbox("Rating", ratings_list)
+                
+                if st.form_submit_button("Add to Tree") and t_name and t_url:
+                    pos = "Before" if "Before" in relation else "After"
+                    c.execute("INSERT INTO cameras (name, location, coordinates, url, traffic_vision_link, rating, submitted_by, link_to_id, position) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", 
+                              (t_name, t_loc, t_coords, t_url, t_vision, t_rating, st.session_state["username"], target_id, pos))
+                    conn.commit()
+                    sync_to_github()
+                    st.success("Nearby tree camera added and synced!")
+                    st.rerun()
+        else:
+            st.info("Add a primary camera first before creating a tree.")
+
 # Main Interface: Search and Sorting controls
 st.subheader("Database List")
 
-df = pd.read_sql("SELECT id, name as Name, location as Location, coordinates as Coordinates, url as API, traffic_vision_link as [Vision Link], rating as Rating, submitted_by as [Submitted By], url as URL FROM cameras", conn)
+df = pd.read_sql("SELECT id, name as Name, location as Location, coordinates as Coordinates, url as API, traffic_vision_link as [Vision Link], rating as Rating, submitted_by as [Submitted By], url as URL, link_to_id, position FROM cameras", conn)
 
 if not df.empty:
     col_search, col_sort, col_order = st.columns([2, 1, 1])
@@ -191,7 +228,7 @@ if not df.empty:
     if sort_by in df.columns:
         df = df.sort_values(by=sort_by, ascending=is_ascending)
 
-    display_df = df.drop(columns=['id', 'URL'])
+    display_df = df.drop(columns=['id', 'URL', 'link_to_id', 'position'])
 
     def color_rating(val):
         if "Green" in str(val):
@@ -206,22 +243,27 @@ if not df.empty:
     st.dataframe(styled_df, use_container_width=True)
     
     st.divider()
-    st.subheader("Live Feeds")
+    st.subheader("Live Feeds & Tree Views")
     
-    for _, row in df.iterrows():
+    # Filter for root/main cameras (those not linked as sub-nodes, or display main ones first)
+    main_cams = df[df['link_to_id'].isna() | (df['link_to_id'] == 0)]
+    
+    for _, row in main_cams.iterrows():
         coords_display = f" | Coords: `{row['Coordinates']}`" if row['Coordinates'] else ""
         vision_display = f" | [Traffic Vision]({row['Vision Link']})" if row['Vision Link'] else ""
         submitter_display = f" | Submitted by: {row['Submitted By']}" if row['Submitted By'] else ""
         
-        st.markdown(f"**{row['Name']}** — *{row['Location']}*{coords_display}{vision_display}{submitter_display} — Status: **{row['Rating']}**")
+        st.markdown(f"### 📍 {row['Name']} — *{row['Location']}*{coords_display}{vision_display}{submitter_display} — Status: **{row['Rating']}**")
         
+        # Main Camera Stream Player
         video_url = row["URL"]
+        main_id = row['id']
         hls_player_html = f"""
         <div>
-            <video id="video_{row['id']}" controls autoplay muted style="width: 100%; max-height: 450px; background: black; border-radius: 8px;"></video>
+            <video id="video_{main_id}" controls autoplay muted style="width: 100%; max-height: 400px; background: black; border-radius: 8px;"></video>
             <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
             <script>
-                var video = document.getElementById('video_{row['id']}');
+                var video = document.getElementById('video_{main_id}');
                 var videoSrc = "{video_url}";
                 if (Hls.isSupported()) {{
                     var hls = new Hls();
@@ -233,7 +275,42 @@ if not df.empty:
             </script>
         </div>
         """
-        components.html(hls_player_html, height=350)
+        components.html(hls_player_html, height=320)
+        
+        # Tree expansion for nearby cams connected to this main camera
+        c.execute("SELECT id, name, location, coordinates, url, traffic_vision_link, rating, submitted_by, position FROM cameras WHERE link_to_id = ?", (int(main_id),))
+        linked_cams = c.fetchall()
+        
+        if linked_cams:
+            with st.expander(f"🌲 View Nearby Tree ({len(linked_cams)} linked cams)"):
+                for l_cam in linked_cams:
+                    l_id, l_name, l_loc, l_coords, l_url, l_vision, l_rating, l_sub, l_pos = l_cam
+                    pos_label = "⬆️ BEFORE (Upstream)" if l_pos == "Before" else "⬇️ AFTER (Downstream)"
+                    l_coords_disp = f" | Coords: `{l_coords}`" if l_coords else ""
+                    l_vision_disp = f" | [Traffic Vision]({l_vision})" if l_vision else ""
+                    l_sub_disp = f" | Submitted by: {l_sub}" if l_sub else ""
+                    
+                    st.markdown(f"**{pos_label}: {l_name}** — *{l_loc}*{l_coords_disp}{l_vision_disp}{l_sub_disp} — Status: **{l_rating}**")
+                    
+                    sub_player_html = f"""
+                    <div>
+                        <video id="video_sub_{l_id}" controls autoplay muted style="width: 100%; max-height: 300px; background: black; border-radius: 8px;"></video>
+                        <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+                        <script>
+                            var video = document.getElementById('video_sub_{l_id}');
+                            var videoSrc = "{l_url}";
+                            if (Hls.isSupported()) {{
+                                var hls = new Hls();
+                                hls.loadSource(videoSrc);
+                                hls.attachMedia(video);
+                            }} else if (video.canPlayType('application/vnd.apple.mpegurl')) {{
+                                video.src = videoSrc;
+                            }}
+                        </script>
+                    </div>
+                    """
+                    components.html(sub_player_html, height=240)
+                    st.divider()
         st.divider()
 else:
     st.info("No cameras added yet. Use the sidebar to add one.")
