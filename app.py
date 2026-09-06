@@ -83,7 +83,7 @@ conn = sqlite3.connect('traffic_cams.db', check_same_thread=False)
 c = conn.cursor()
 
 c.execute('''CREATE TABLE IF NOT EXISTS cameras 
-             (id INTEGER PRIMARY KEY, name TEXT, location TEXT, coordinates TEXT, url TEXT, traffic_vision_link TEXT, rating TEXT, submitted_by TEXT, link_to_id INTEGER, position TEXT)''')
+             (id INTEGER PRIMARY KEY, name TEXT, location TEXT, coordinates TEXT, url TEXT, traffic_vision_link TEXT, rating TEXT, submitted_by TEXT, link_to_id INTEGER, position TEXT, lane_description TEXT)''')
 conn.commit()
 
 # Robust column verification using PRAGMA
@@ -106,6 +106,10 @@ if "position" not in existing_columns:
     c.execute("ALTER TABLE cameras ADD COLUMN position TEXT")
     conn.commit()
 
+if "lane_description" not in existing_columns:
+    c.execute("ALTER TABLE cameras ADD COLUMN lane_description TEXT")
+    conn.commit()
+
 # Sidebar Manager (Add, Edit, or Link Tree)
 with st.sidebar:
     st.header("Camera Manager")
@@ -120,11 +124,12 @@ with st.sidebar:
             coords = st.text_input("Coordinates (e.g., 57.78, 14.16)")
             url = st.text_input("Stream URL")
             vision_link = st.text_input("Traffic Vision Link (URL)")
+            lane_desc = st.text_input("Lane Description / Show Notes")
             rating = st.selectbox("Rating", ratings_list)
             
             if st.form_submit_button("Save Camera") and name and url:
-                c.execute("INSERT INTO cameras (name, location, coordinates, url, traffic_vision_link, rating, submitted_by, link_to_id, position) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL)", 
-                          (name, loc, coords, url, vision_link, rating, st.session_state["username"]))
+                c.execute("INSERT INTO cameras (name, location, coordinates, url, traffic_vision_link, rating, submitted_by, link_to_id, position, lane_description) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)", 
+                          (name, loc, coords, url, vision_link, rating, st.session_state["username"], lane_desc))
                 conn.commit()
                 sync_to_github() 
                 st.success("Camera saved and synced!")
@@ -135,9 +140,7 @@ with st.sidebar:
         all_cams = c.fetchall()
         
         if all_cams:
-            # Build helper dictionary for display name mapping
             id_to_name = {row[0]: row[1] for row in all_cams}
-            
             cam_options = {}
             for cid, cname, cpos, cparent in all_cams:
                 if cpos and cparent in id_to_name:
@@ -149,7 +152,7 @@ with st.sidebar:
             selected_label = st.selectbox("Select Camera to Edit / Delete", list(cam_options.keys()))
             selected_id = cam_options[selected_label]
             
-            c.execute("SELECT name, location, coordinates, url, traffic_vision_link, rating, link_to_id, position FROM cameras WHERE id = ?", (selected_id,))
+            c.execute("SELECT name, location, coordinates, url, traffic_vision_link, rating, link_to_id, position, lane_description FROM cameras WHERE id = ?", (selected_id,))
             curr = c.fetchone()
             
             with st.form("edit_form"):
@@ -158,6 +161,7 @@ with st.sidebar:
                 e_coords = st.text_input("Coordinates", value=curr[2] or "")
                 e_url = st.text_input("Stream URL", value=curr[3])
                 e_vision_link = st.text_input("Traffic Vision Link", value=curr[4] or "")
+                e_lane_desc = st.text_input("Lane Description / Show Notes", value=curr[8] or "")
                 
                 try:
                     r_index = ratings_list.index(curr[5])
@@ -165,7 +169,6 @@ with st.sidebar:
                     r_index = 0
                 e_rating = st.selectbox("Rating", ratings_list, index=r_index)
                 
-                # If it's a tree node, allow changing its relation/position
                 is_tree_node = curr[6] is not None
                 e_position = curr[7]
                 if is_tree_node:
@@ -182,17 +185,16 @@ with st.sidebar:
                     
                 if update_btn and e_name and e_url:
                     if is_tree_node:
-                        c.execute("UPDATE cameras SET name=?, location=?, coordinates=?, url=?, traffic_vision_link=?, rating=?, position=? WHERE id=?", 
-                                  (e_name, e_loc, e_coords, e_url, e_vision_link, e_rating, e_position, selected_id))
+                        c.execute("UPDATE cameras SET name=?, location=?, coordinates=?, url=?, traffic_vision_link=?, rating=?, position=?, lane_description=? WHERE id=?", 
+                                  (e_name, e_loc, e_coords, e_url, e_vision_link, e_rating, e_position, e_lane_desc, selected_id))
                     else:
-                        c.execute("UPDATE cameras SET name=?, location=?, coordinates=?, url=?, traffic_vision_link=?, rating=? WHERE id=?", 
-                                  (e_name, e_loc, e_coords, e_url, e_vision_link, e_rating, selected_id))
+                        c.execute("UPDATE cameras SET name=?, location=?, coordinates=?, url=?, traffic_vision_link=?, rating=?, lane_description=? WHERE id=?", 
+                                  (e_name, e_loc, e_coords, e_url, e_vision_link, e_rating, e_lane_desc, selected_id))
                     conn.commit()
                     sync_to_github() 
                     st.success("Updated and synced successfully!")
                     st.rerun()
                 elif delete_btn:
-                    # Delete the camera and any child nodes linked to it if it's a main camera
                     c.execute("DELETE FROM cameras WHERE id = ? OR link_to_id = ?", (selected_id, selected_id))
                     conn.commit()
                     sync_to_github() 
@@ -217,12 +219,13 @@ with st.sidebar:
                 t_coords = st.text_input("Coordinates")
                 t_url = st.text_input("Stream URL")
                 t_vision = st.text_input("Traffic Vision Link")
+                t_lane_desc = st.text_input("Lane Description / Show Notes")
                 t_rating = st.selectbox("Rating", ratings_list)
                 
                 if st.form_submit_button("Add to Tree") and t_name and t_url:
                     pos = "Before" if "Before" in relation else "After"
-                    c.execute("INSERT INTO cameras (name, location, coordinates, url, traffic_vision_link, rating, submitted_by, link_to_id, position) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", 
-                              (t_name, t_loc, t_coords, t_url, t_vision, t_rating, st.session_state["username"], target_id, pos))
+                    c.execute("INSERT INTO cameras (name, location, coordinates, url, traffic_vision_link, rating, submitted_by, link_to_id, position, lane_description) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", 
+                              (t_name, t_loc, t_coords, t_url, t_vision, t_rating, st.session_state["username"], target_id, pos, t_lane_desc))
                     conn.commit()
                     sync_to_github()
                     st.success("Nearby tree camera added and synced!")
@@ -233,7 +236,7 @@ with st.sidebar:
 # Main Interface: Search and Sorting controls
 st.subheader("Database List")
 
-df = pd.read_sql("SELECT id, name as Name, location as Location, coordinates as Coordinates, url as API, traffic_vision_link as [Vision Link], rating as Rating, submitted_by as [Submitted By], url as URL, link_to_id, position FROM cameras", conn)
+df = pd.read_sql("SELECT id, name as Name, location as Location, coordinates as Coordinates, url as API, traffic_vision_link as [Vision Link], lane_description as [Lane Desc], rating as Rating, submitted_by as [Submitted By], url as URL, link_to_id, position FROM cameras", conn)
 
 if not df.empty:
     col_search, col_sort, col_order = st.columns([2, 1, 1])
@@ -275,10 +278,12 @@ if not df.empty:
     for _, row in main_cams.iterrows():
         coords_display = f" | Coords: `{row['Coordinates']}`" if row['Coordinates'] else ""
         vision_display = f" | [Traffic Vision]({row['Vision Link']})" if row['Vision Link'] else ""
+        lane_display = f" | 📝 *{row['Lane Desc']}*" if row['Lane Desc'] else ""
         submitter_display = f" | Submitted by: {row['Submitted By']}" if row['Submitted By'] else ""
         
-        st.markdown(f"### 📍 {row['Name']} — *{row['Location']}*{coords_display}{vision_display}{submitter_display} — Status: **{row['Rating']}**")
+        st.markdown(f"### 📍 {row['Name']} — *{row['Location']}*{lane_display}{coords_display}{vision_display}{submitter_display} — Status: **{row['Rating']}**")
         
+        # Main Camera Stream Player
         video_url = row["URL"]
         main_id = row['id']
         hls_player_html = f"""
@@ -300,19 +305,40 @@ if not df.empty:
         """
         components.html(hls_player_html, height=320)
         
-        c.execute("SELECT id, name, location, coordinates, url, traffic_vision_link, rating, submitted_by, position FROM cameras WHERE link_to_id = ?", (int(main_id),))
+        # Quick Edit Expander directly under the feed
+        with st.expander(f"⚙️ Quick Edit Details ({row['Name']})"):
+            with st.form(f"quick_edit_{main_id}"):
+                qe_name = st.text_input("Name", value=row['Name'])
+                qe_lane = st.text_input("Lane Description", value=row['Lane Desc'] if row['Lane Desc'] else "")
+                
+                try:
+                    qe_r_idx = ratings_list.index(row['Rating'])
+                except ValueError:
+                    qe_r_idx = 0
+                qe_rating = st.selectbox("Rating", ratings_list, index=qe_r_idx)
+                
+                if st.form_submit_button("Save Changes"):
+                    c.execute("UPDATE cameras SET name=?, lane_description=?, rating=? WHERE id=?", (qe_name, qe_lane, qe_rating, main_id))
+                    conn.commit()
+                    sync_to_github()
+                    st.success("Updated successfully!")
+                    st.rerun()
+
+        # Tree expansion for nearby cams connected to this main camera
+        c.execute("SELECT id, name, location, coordinates, url, traffic_vision_link, rating, submitted_by, position, lane_description FROM cameras WHERE link_to_id = ?", (int(main_id),))
         linked_cams = c.fetchall()
         
         if linked_cams:
             with st.expander(f"🌲 View Nearby Tree ({len(linked_cams)} linked cams)"):
                 for l_cam in linked_cams:
-                    l_id, l_name, l_loc, l_coords, l_url, l_vision, l_rating, l_sub, l_pos = l_cam
+                    l_id, l_name, l_loc, l_coords, l_url, l_vision, l_rating, l_sub, l_pos, l_lane = l_cam
                     pos_label = "⬆️ BEFORE (Upstream)" if l_pos == "Before" else "⬇️ AFTER (Downstream)"
                     l_coords_disp = f" | Coords: `{l_coords}`" if l_coords else ""
                     l_vision_disp = f" | [Traffic Vision]({l_vision})" if l_vision else ""
+                    l_lane_disp = f" | 📝 *{l_lane}*" if l_lane else ""
                     l_sub_disp = f" | Submitted by: {l_sub}" if l_sub else ""
                     
-                    st.markdown(f"**{pos_label}: {l_name}** — *{l_loc}*{l_coords_disp}{l_vision_disp}{l_sub_disp} — Status: **{l_rating}**")
+                    st.markdown(f"**{pos_label}: {l_name}** — *{l_loc}*{l_lane_disp}{l_coords_disp}{l_vision_disp}{l_sub_disp} — Status: **{l_rating}**")
                     
                     sub_player_html = f"""
                     <div>
@@ -332,6 +358,25 @@ if not df.empty:
                     </div>
                     """
                     components.html(sub_player_html, height=240)
+                    
+                    # Quick edit for sub-nodes
+                    with st.expander(f"⚙️ Quick Edit ({l_name})"):
+                        with st.form(f"quick_edit_sub_{l_id}"):
+                            qes_name = st.text_input("Name", value=l_name)
+                            qes_lane = st.text_input("Lane Description", value=l_lane if l_lane else "")
+                            try:
+                                qes_r_idx = ratings_list.index(l_rating)
+                            except ValueError:
+                                qes_r_idx = 0
+                            qes_rating = st.selectbox("Rating", ratings_list, index=qes_r_idx)
+                            
+                            if st.form_submit_button("Save Sub-Cam Changes"):
+                                c.execute("UPDATE cameras SET name=?, lane_description=?, rating=? WHERE id=?", (qes_name, qes_lane, qes_rating, l_id))
+                                conn.commit()
+                                sync_to_github()
+                                st.success("Sub-cam updated!")
+                                st.rerun()
+                                
                     st.divider()
         st.divider()
 else:
