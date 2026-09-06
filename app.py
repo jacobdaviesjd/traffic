@@ -1,23 +1,45 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import sqlite3
 import pandas as pd
 
-# Login screen with username and shared password
+# Initialize session state for login
 if "logged_in" not in st.session_state:
     st.session_state["logged_in"] = False
+if "username" not in st.session_state:
+    st.session_state["username"] = ""
 
+# Auto-login check using query params if "Remember Me" was previously checked
+if not st.session_state["logged_in"]:
+    qp_logged_in = st.query_params.get("logged_in")
+    qp_username = st.query_params.get("username")
+    if qp_logged_in == "true" and qp_username:
+        st.session_state["logged_in"] = True
+        st.session_state["username"] = qp_username
+
+# Login Screen
 if not st.session_state["logged_in"]:
     st.title("Login")
     username_input = st.text_input("Your Name / Username")
     pwd = st.text_input("Shared Password", type="password")
+    remember_me = st.checkbox("Remember me on this device")
     
-    # Retrieves password from Streamlit secrets (secure) or falls back for local testing
-    correct_password = st.secrets.get("app_password", "SecurePassword123!")
+    # Safely look for cloud secret, fall back for local testing
+    try:
+        correct_password = st.secrets["app_password"]
+    except Exception:
+        correct_password = "SecurePassword123!"
     
     if st.button("Login"):
         if pwd == correct_password and username_input:
             st.session_state["logged_in"] = True
             st.session_state["username"] = username_input
+            
+            # Save to query params if remember me is checked
+            if remember_me:
+                st.query_params["logged_in"] = "true"
+                st.query_params["username"] = username_input
+                
             st.rerun()
         elif not username_input:
             st.error("Please enter your name.")
@@ -25,9 +47,20 @@ if not st.session_state["logged_in"]:
             st.error("Incorrect password.")
     st.stop()
 
-# Main App
-st.title("Traffic Camera Monitor")
-st.write(f"Logged in as: **{st.session_state['username']}**")
+# Main App Layout with Top Bar for User & Logout
+col_title, col_logout = st.columns([4, 1])
+with col_title:
+    st.title("Traffic Camera Monitor")
+    st.write(f"Logged in as: **{st.session_state['username']}**")
+with col_logout:
+    st.write("") # spacing
+    if st.button("Logout"):
+        st.session_state["logged_in"] = False
+        st.session_state["username"] = ""
+        st.query_params.clear()
+        st.rerun()
+
+st.divider()
 
 conn = sqlite3.connect('traffic_cams.db', check_same_thread=False)
 c = conn.cursor()
@@ -145,16 +178,34 @@ if not df.empty:
     
     st.divider()
     st.subheader("Live Feeds")
+    
     for _, row in df.iterrows():
         coords_display = f" | Coords: `{row['Coordinates']}`" if row['Coordinates'] else ""
         vision_display = f" | [Traffic Vision]({row['Vision Link']})" if row['Vision Link'] else ""
         submitter_display = f" | Submitted by: {row['Submitted By']}" if row['Submitted By'] else ""
         
         st.markdown(f"**{row['Name']}** — *{row['Location']}*{coords_display}{vision_display}{submitter_display} — Status: **{row['Rating']}**")
-        try:
-            st.video(row["URL"], autoplay=True, muted=True)
-        except Exception:
-            st.error("Could not load video stream from this URL.")
+        
+        # Cross-browser HLS Video Player (Works on Firefox and Chrome)
+        video_url = row["URL"]
+        hls_player_html = f"""
+        <div>
+            <video id="video_{row['id']}" controls autoplay muted style="width: 100%; max-height: 450px; background: black; border-radius: 8px;"></video>
+            <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+            <script>
+                var video = document.getElementById('video_{row['id']}');
+                var videoSrc = "{video_url}";
+                if (Hls.isSupported()) {{
+                    var hls = new Hls();
+                    hls.loadSource(videoSrc);
+                    hls.attachMedia(video);
+                }} else if (video.canPlayType('application/vnd.apple.mpegurl')) {{
+                    video.src = videoSrc;
+                }}
+            </script>
+        </div>
+        """
+        components.html(hls_player_html, height=350)
         st.divider()
 else:
     st.info("No cameras added yet. Use the sidebar to add one.")
