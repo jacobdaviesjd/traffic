@@ -88,7 +88,7 @@ with st.sidebar:
     st.header("Camera Manager")
     action = st.radio("Choose Action", ["Add New Camera", "Edit Existing Camera"])
     
-    ratings_list = ["Green", "Orange", "Red"]
+    ratings_list = ["Green 🟢", "Orange 🟠", "Red 🔴"]
 
     if action == "Add New Camera":
         with st.form("add_form"):
@@ -174,7 +174,19 @@ if not df.empty:
         df = df.sort_values(by=sort_by, ascending=is_ascending)
 
     display_df = df.drop(columns=['id', 'URL'])
-    st.dataframe(display_df, use_container_width=True)
+
+    # Style the Rating column to stand out with distinct background colors
+    def color_rating(val):
+        if "Green" in str(val):
+            return 'background-color: #d4edda; color: #155724; font-weight: bold;'
+        elif "Orange" in str(val):
+            return 'background-color: #fff3cd; color: #856404; font-weight: bold;'
+        elif "Red" in str(val):
+            return 'background-color: #f8d7da; color: #721c24; font-weight: bold;'
+        return ''
+
+    styled_df = display_df.style.map(color_rating, subset=['Rating'])
+    st.dataframe(styled_df, use_container_width=True)
     
     st.divider()
     st.subheader("Live Feeds")
